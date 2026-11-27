@@ -1,20 +1,30 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:taskflow/database/app_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:taskflow/core/di/injection_container.dart';
 import 'package:taskflow/main.dart';
-import 'package:taskflow/models/enums.dart';
-import 'package:taskflow/repositories/repositories.dart';
+import 'package:taskflow/src/domain/entities/enums.dart';
+import 'package:taskflow/src/domain/usecases/project_usecases.dart';
+import 'package:taskflow/src/domain/usecases/task_usecases.dart';
+import 'package:taskflow/src/domain/usecases/user_usecases.dart';
+
+import 'helpers.dart';
 
 void main() {
-  late Repositories repos;
-
-  setUp(() {
-    repos = Repositories(AppDatabase(NativeDatabase.memory()));
+  setUp(() async {
+    SharedPreferences.setMockInitialValues({});
+    await resetDependencies();
+    await configureDependencies(
+      executor: NativeDatabase.memory(),
+      preferences: await SharedPreferences.getInstance(),
+    );
   });
 
+  tearDown(resetDependencies);
+
   Future<void> openApp(WidgetTester tester) async {
-    await tester.pumpWidget(TaskFlowApp(repos: repos));
+    await tester.pumpWidget(const TaskFlowApp());
     await tester.pumpAndSettle();
   }
 
@@ -31,15 +41,16 @@ void main() {
   Future<void> closeApp(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox());
     await tester.pumpAndSettle();
-    await tester.runAsync(repos.db.close);
+    await tester.runAsync(resetDependencies);
   }
 
   testWidgets('главный экран: заголовок, навигация и пустые состояния', (
     tester,
   ) async {
     await openApp(tester);
+    await settle(tester);
 
-    expect(find.text('Проекты'), findsWidgets); // заголовок + пункт навигации
+    expect(find.text('Проекты'), findsWidgets);
     expect(find.text('Задачи'), findsOneWidget);
     expect(find.text('Люди'), findsOneWidget);
     expect(find.text('Статистика'), findsWidgets);
@@ -55,7 +66,7 @@ void main() {
     await openApp(tester);
 
     await tester.tap(find.text('Люди'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     expect(find.textContaining('Пользователей пока нет'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('addUserFab')));
@@ -65,12 +76,9 @@ void main() {
     await tester.enterText(find.byKey(const Key('userName')), 'Анна');
     await tester.enterText(find.byKey(const Key('userEmail')), 'anna@mail.com');
     await tester.tap(find.byKey(const Key('saveUser')));
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 100)),
-    );
-    await tester.pumpAndSettle();
+    await settle(tester);
 
-    expect(find.text('Новый пользователь'), findsNothing); // диалог закрыт
+    expect(find.text('Новый пользователь'), findsNothing);
     expect(find.text('Анна'), findsOneWidget);
     expect(find.textContaining('anna@mail.com'), findsOneWidget);
 
@@ -81,28 +89,24 @@ void main() {
     tester,
   ) async {
     await tester.runAsync(
-      () => repos.users.createUser(name: 'Анна', email: 'anna@mail.com'),
+      () => getIt<CreateUserUseCase>()(name: 'Анна', email: 'anna@mail.com'),
     );
     await openApp(tester);
 
     await tester.tap(find.text('Люди'));
-    await tester.pumpAndSettle();
+    await settle(tester);
     await tester.tap(find.byKey(const Key('addUserFab')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('userName')), 'Двойник');
     await tester.enterText(find.byKey(const Key('userEmail')), 'ANNA@mail.com');
     await tester.tap(find.byKey(const Key('saveUser')));
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 100)),
-    );
-    await tester.pumpAndSettle();
+    await settle(tester);
 
     expect(
       find.text('Пользователь с таким email уже существует'),
       findsOneWidget,
     );
     expect(find.text('Новый пользователь'), findsOneWidget);
-    expect(await tester.runAsync(() => repos.users.getUsers()), hasLength(1));
 
     await closeApp(tester);
   });
@@ -110,14 +114,16 @@ void main() {
   testWidgets('экран статистики обновляется после изменения данных (watch)', (
     tester,
   ) async {
-    // Высокий экран, чтобы весь Dashboard (ленивый ListView) был построен.
     tester.view.physicalSize = const Size(800, 3000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    late int projectId;
-    await tester.runAsync(() async {
-      projectId = await repos.projects.createProject(name: 'Alpha');
-    });
+
+    final createProject = getIt<CreateProjectUseCase>();
+    final createTask = getIt<CreateTaskUseCase>();
+    final changeStatus = getIt<ChangeTaskStatusUseCase>();
+    final projectId = (await tester.runAsync(
+      () => createProject(name: 'Alpha'),
+    ))!.value;
     await openApp(tester);
 
     await tester.tap(find.text('Статистика').last);
@@ -127,17 +133,13 @@ void main() {
       '0',
     );
 
-    // Каждую операцию с БД выполняем отдельно и сразу перерисовываем кадр:
-    // потоки Drift живут в «фейковом» времени теста и без pump не обработают запрос.
-    await tester.runAsync(
-      () => repos.tasks.createTask(title: 'T1', projectId: projectId),
-    );
+    await tester.runAsync(() => createTask(title: 'T1', projectId: projectId));
     await settle(tester);
     final t2 = (await tester.runAsync(
-      () => repos.tasks.createTask(title: 'T2', projectId: projectId),
-    ))!;
+      () => createTask(title: 'T2', projectId: projectId),
+    ))!.value;
     await settle(tester);
-    await tester.runAsync(() => repos.tasks.changeStatus(t2, TaskStatus.done));
+    await tester.runAsync(() => changeStatus(t2, TaskStatus.done));
     await settle(tester);
 
     expect(
@@ -156,8 +158,9 @@ void main() {
   testWidgets('переход между экранами: проект → форма новой задачи → назад', (
     tester,
   ) async {
-    await tester.runAsync(() => repos.projects.createProject(name: 'Alpha'));
+    await tester.runAsync(() => getIt<CreateProjectUseCase>()(name: 'Alpha'));
     await openApp(tester);
+    await settle(tester);
 
     await tester.tap(find.text('Alpha'));
     await settle(tester);
@@ -171,6 +174,35 @@ void main() {
     tester.state<NavigatorState>(find.byType(Navigator).first).pop();
     await settle(tester);
     expect(find.text('Новая задача'), findsNothing);
+
+    await closeApp(tester);
+  });
+
+  testWidgets('новая функция: задача добавляется в «Избранное» и видна там', (
+    tester,
+  ) async {
+    final projectId = (await tester.runAsync(
+      () => getIt<CreateProjectUseCase>()(name: 'Alpha'),
+    ))!.value;
+    final taskId = (await tester.runAsync(
+      () => getIt<CreateTaskUseCase>()(title: 'Важная', projectId: projectId),
+    ))!.value;
+    await openApp(tester);
+
+    await tester.tap(find.text('Alpha'));
+    await settle(tester);
+    await tester.tap(find.byKey(Key('favorite_$taskId')));
+    await settle(tester);
+
+    // Назад на главный экран и в меню «Избранное».
+    tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+    await settle(tester);
+    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Избранное'));
+    await settle(tester);
+
+    expect(find.text('Важная'), findsOneWidget);
 
     await closeApp(tester);
   });

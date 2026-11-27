@@ -1,9 +1,9 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:taskflow/database/app_database.dart';
-import 'package:taskflow/models/models.dart';
-import 'package:taskflow/repositories/performance_service.dart';
-import 'package:taskflow/repositories/task_repository.dart';
+import 'package:taskflow/models/app_database.dart';
+import 'package:taskflow/src/data/datasources/local/performance_service.dart';
+import 'package:taskflow/src/data/datasources/local/task_local_data_source.dart';
+import 'package:taskflow/src/domain/entities/task.dart';
 
 void main() {
   test('1000 пользователей / 100 проектов / 10 000 задач: пагинация и индексы', () async {
@@ -17,7 +17,7 @@ void main() {
     expect((await db.select(db.tasks).get()).length, 10000);
 
     // пагинация: страницы не пересекаются
-    final repo = TaskRepository(db);
+    final repo = TaskLocalDataSourceImpl(db);
     final p1 = await repo.getTasks(const TaskFilter(limit: 50));
     final p2 = await repo.getTasks(const TaskFilter(limit: 50, offset: 50));
     expect(p1, hasLength(50));
