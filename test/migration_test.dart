@@ -1,8 +1,8 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart' as sql;
-import 'package:taskflow/database/app_database.dart';
-import 'package:taskflow/models/enums.dart';
+import 'package:taskflow/models/app_database.dart';
+import 'package:taskflow/src/domain/entities/enums.dart';
 
 /// Схема v1: таблица tasks БЕЗ поля priority.
 void _createV1(sql.Database raw) {
